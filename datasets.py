@@ -1,5 +1,6 @@
 import os
 import torch
+import random
 from PIL import Image, ImageFile
 from torchvision import transforms
 import torchvision.datasets.folder
@@ -11,7 +12,7 @@ from torchvision.transforms.functional import rotate
 from torch.utils.data import Dataset
 from wilds.datasets.camelyon17_dataset import Camelyon17Dataset
 from wilds.datasets.fmow_dataset import FMoWDataset
-from hparams import set_hparams
+from FMDA.hparams import set_hparams
 from sklearn.model_selection import train_test_split
 from copy import deepcopy
 DATASETS = [
@@ -19,12 +20,24 @@ DATASETS = [
     ,'Support'
     ,'Cardio'
 ]
-
+def seed_torch(seed: int = 42) -> None:
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)  
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
+    print(f"Random seed set as {seed}")
 def dirichlet_split_noniid(train_labels, alpha, n_clients):
     '''
     Divide n_client supgroups.
     '''
-    #print(len(train_labels))
+
     n_classes = train_labels.max()+1
     label_distribution = np.random.dirichlet([alpha]*n_clients, n_classes)
 
@@ -37,7 +50,7 @@ def dirichlet_split_noniid(train_labels, alpha, n_clients):
             client_idcs[i] += [idcs]
 
     client_idcs = [np.concatenate(idcs) for idcs in client_idcs]
-    #print(len(client_idcs[0]))
+
     return client_idcs
 
 
@@ -91,7 +104,7 @@ class TabularData:
                                                             , train_size = 1- hparams['holdout_fraction']
                                                             ,  test_size = hparams['holdout_fraction'])
             self.te_datasets.append((XC_test, YC_test))
-        
+            
     def divide_data_modify_dif_alpha(self, X, Y, hparams):
         print("modify alpha")
         # modif0y the testing datasets
@@ -112,7 +125,7 @@ class TabularData:
         Y_test = Y_test.to(torch.long)
         
         client_idcs = dirichlet_split_noniid(Y_train, hparams['agnostic_alpha'], hparams['n_client'])
-
+        
         self.total_te = (X_test, Y_test)
         self.te_datasets = []
         for i in range(hparams['n_client']):
@@ -121,9 +134,17 @@ class TabularData:
             XC_train, XC_test, YC_train, YC_test = train_test_split(temp_X, temp_Y
                                                             , train_size = 1- hparams['holdout_fraction']
                                                             ,  test_size = hparams['holdout_fraction'])
-            print(len(XC_test), len(YC_test))
+            
             self.te_datasets.append((XC_test, YC_test))
-        print(len(self.te_datasets))
+            print(len(XC_train), len(XC_test))
+            print("test_client",i)
+            test_data = myDataset(XC_test, YC_test,2)
+            attr_list = test_data.split_by_attr()
+            for idx,attr in enumerate(attr_list):
+                print("attr", idx)
+                print("lenth",len(attr))
+            
+        print("modified:",len(self.te_datasets))
     def divide_data_normal(self, X, Y, hparams, Sens = None):
         self.num_classes = len(Y.unique())
         self.input_shape = len(X.columns)
@@ -160,6 +181,20 @@ class TabularData:
                                                             ,  test_size = hparams['holdout_fraction'])
             self.tr_datasets.append((XC_train, YC_train))
             self.te_datasets.append((XC_test, YC_test))
+            print(len(XC_train))
+            print(len(XC_test))
+            print("test_client",i)
+            test_data = myDataset(XC_test, YC_test,2)
+            attr_list = test_data.split_by_attr()
+            for idx,attr in enumerate(attr_list):
+                print("attr", idx)
+                print("lenth",len(attr))
+            print("train_client",i)
+            train_data = myDataset(XC_train, YC_train,2)
+            attr_list = train_data.split_by_attr()
+            for idx,attr in enumerate(attr_list):
+                print("attr", idx)
+                print("lenth",len(attr))
 
             
 class Covid(TabularData):
@@ -178,17 +213,23 @@ class Covid(TabularData):
         X = all_data
         Y = all_data['is_dead']
         print(X.shape)
+        X.to_csv("Covid_pro.csv")
         del X['is_dead']
         if hparams['test_EO'] == 1:
             print(X.head())
             print(X.columns)
             self.sens_attr = X.columns.tolist().index(hparams['sens_attr'])
             hparams['sens_index'] = self.sens_attr
-        
-        print(self.sens_attr)
+        self.sens_attr = X.columns.tolist().index(hparams['sens_attr'])
+        hparams['sens_index'] = self.sens_attr
+        print("sens_index",hparams['sens_index'] )
+
         
         ################ divide dataset ################
         self.divide_data(X, Y, hparams)
+        if hparams['agnostic_alpha'] > 0:
+            self.divide_data_modify_dif_alpha(X, Y, hparams)
+        
     def read_data(self, data_dir):
         # From the Covid-19-Brazil dataset
         path = data_dir + "INFLU20-04052020.csv"
@@ -297,9 +338,10 @@ class Support(TabularData):
         
         X = all_data
         Y = all_data['death']
+        X.to_csv("Support_pro.csv")
         del X['death']
         print(X.shape)
-        #print(X.columns)
+
         if hparams['test_EO'] == 1:
             print(X.head())
             print(X.columns)
@@ -411,7 +453,7 @@ class Cardio(TabularData):
         Y = all_data['Class']
         for i in range(Y.shape[0]):
             Y[i] = Y[i] - 1
-        
+        X.to_csv("Cardio_pro.csv")
         del X['Class']
         print(X.shape)
         ################ divide dataset ################
@@ -491,7 +533,7 @@ class SEER(TabularData):
             for i in range(Y.shape[0]):
                 Y[i] = refer_Y[uni_Y.index(Y_list[i])]
             Y = Y.astype("int")
-        
+            X.to_csv("SEER.csv")
             del X['Site recode ICD-O-3/WHO 2008']
             del X['Unnamed: 0']
             return X, Y
@@ -500,7 +542,7 @@ class SEER(TabularData):
         self.sens_attr = X.columns.tolist().index(hparams['sens_attr'])
         hparams['sens_index'] = self.sens_attr
         ################ divide dataset ################
-        #self.divide_data(X, Y, hparams)  
+ 
         if hparams['agnostic'] == 1:
             AX, AY = split_X_Y(A_data, uni_Y, refer_Y)
             self.divide_data(X, Y, hparams, None, AX, AY)
@@ -556,7 +598,7 @@ class SEER(TabularData):
                 else:
                     continue
                 
-                #temp_data = temp_data.dropna(how = "any")
+
                 if is_load == 0:
                     is_load = 1
                     # check if the columns are in all_columns
@@ -711,7 +753,7 @@ class myDataset(Dataset):
             
         dataset_list = []
         for i in range(num_attr):
-            #print("X_list[i],Y_list[i]:",len(X_list[i]),len(Y_list[i]))
+            
             dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
         return dataset_list
     def split_by_attr_2(self, num_attr, sens_index, index = -1):
@@ -737,6 +779,108 @@ class myDataset(Dataset):
         for i in range(num_attr):
             dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
         return dataset_list
+    def split_by_attr_overall(self, index = -1):
+        # return a list of datasets
+        # index: feature.-1: label
+        
+        
+        X_list = []
+        Y_list = []
+        for i in range(self.num_splits):
+            X_list.append([])
+            Y_list.append([])
+        
+        for i in range(self.X.shape[0]):
+            
+            X_list[self.Y[i]].append(self.X[i])
+            Y_list[self.Y[i]].append(self.Y[i])
+        number_vector = np.zeros(len(X_list))
+        for i in range(len(X_list)):
+            number_vector[i] = len(X_list[i])
+        dataset_list = []
+        for i in range(self.num_splits):
+            dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
+        return dataset_list, number_vector
+    def split_by_attr_22(self, num_attr, sens_index, index = -1):
+        # return a list of datasets
+        # index: feature.-1: label
+        
+        
+        X_list = []
+        Y_list = []
+        for i in range(num_attr):
+            X_list.append([])
+            Y_list.append([])
+        
+        for i in range(self.X.shape[0]):
+            if self.X[i, sens_index] == 1:
+                index_temp = self.Y[i] + 11
+            else:
+                index_temp = self.Y[i]
+            X_list[index_temp].append(self.X[i])
+            Y_list[index_temp].append(self.Y[i])
+        number_vector = np.zeros(len(X_list))
+        for i in range(len(X_list)):
+            number_vector[i] = len(X_list[i])
+        dataset_list = []
+        dataset_list = []
+        for i in range(num_attr):
+            
+            dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
+        return dataset_list, number_vector
+    def split_by_attr_4(self, num_attr, sens_index, index = -1):
+        # return a list of datasets
+        # index: feature.-1: label
+        
+        
+        X_list = []
+        Y_list = []
+        for i in range(num_attr):
+            X_list.append([])
+            Y_list.append([])
+        
+        for i in range(self.X.shape[0]):
+            if self.X[i, sens_index] == 1:
+                index_temp = self.Y[i] + 2
+            else:
+                index_temp = self.Y[i]
+            X_list[index_temp].append(self.X[i])
+            Y_list[index_temp].append(self.Y[i])
+        number_vector = np.zeros(len(X_list))
+        for i in range(len(X_list)):
+            number_vector[i] = len(X_list[i])
+        dataset_list = []
+        dataset_list = []
+        for i in range(num_attr):
+            
+            dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
+        return dataset_list, number_vector
+    def split_by_attr_2(self, num_attr, sens_index, index = -1):
+        # return a list of datasets
+        # index: feature.-1: label
+        
+        
+        X_list = []
+        Y_list = []
+        for i in range(num_attr):
+            X_list.append([])
+            Y_list.append([])
+        
+        for i in range(self.X.shape[0]):
+            if self.X[i, sens_index] == 1:
+                index_temp = 1
+            else:
+                index_temp = 0
+            X_list[index_temp].append(self.X[i])
+            Y_list[index_temp].append(self.Y[i])
+        number_vector = np.zeros(len(X_list))
+        for i in range(len(X_list)):
+            number_vector[i] = len(X_list[i])
+        dataset_list = []
+        dataset_list = []
+        for i in range(num_attr):
+            dataset_list.append(myDataset(X_list[i],Y_list[i],self.num_splits))
+        return dataset_list, number_vector
     def __len__(self):
         return len(self.X)
     

@@ -9,13 +9,22 @@ from copy import deepcopy
 import copy
 import numpy as np
 from collections import OrderedDict
-from evaluate import evaluate_loss_mat
+from FMDA.evaluate import evaluate_loss_mat
 ALGORITHMS = [
     "FedAvg"
-    ,"FedUFO"
+    ,"FMDA"
     ,"AFL"
+    ,"Q_Fed"
     ,"Global"
     ,"Split"
+    ,"FMDA_M_N"
+    ,"FairFed"
+    ,"DIPOLE"
+    ,"FMDA_M_4"
+    ,"FMDA_M_22"
+    ,"FMDA_22"
+    ,"FMDA_2"
+    ,"FMDA_4"
 
 ]
 
@@ -63,6 +72,7 @@ class FedAvg(torch.nn.Module):
         super(FedAvg, self).__init__()
         self.is_modified = 0 # to check if the client is modifier
         self.is_server = is_server # -1: server, otherwise: number of the clients
+        self.num_classes = num_classes
         self.num_attr = num_classes
         self.hparams = hparams
         if hparams['backbone'] == "MLP":
@@ -122,6 +132,175 @@ class FedAvg(torch.nn.Module):
 
     def predict(self, X):
         return self.network(X)
+class FairFed(torch.nn.Module):
+    """
+    FairFed: Enabling Group Fairness in Federated Learning
+    """
+
+    def __init__(self, input_shape, num_classes, hparams, client_tr, is_server = 0):
+        super(FairFed, self).__init__()
+        self.is_modified = 0 # to check if the client is modifier
+        self.is_server = is_server # -1: server, otherwise: number of the clients
+        self.num_classes = num_classes
+        self.num_attr = num_classes
+        self.hparams = hparams
+        self.beta = hparams['beta']
+        if hparams['backbone'] == "MLP":
+            self.featurizer = MLP(input_shape, num_classes, self.hparams)
+            self.classifier = Classifier(
+            self.featurizer.n_outputs,
+            num_classes,
+            self.hparams['nonlinear'])
+            self.network = nn.Sequential(self.featurizer, self.classifier)
+        else:
+            self.featurizer = nn.Linear(input_shape, num_classes)
+            self.network = self.featurizer
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+        ) 
+        # initialize the weight vector
+        self.client_number = torch.ones(hparams['n_client'])
+        self.weight = torch.ones(hparams['n_client'])
+        for i in range(hparams['n_client']):
+            self.weight[i] = len(client_tr[i])
+            self.client_number[i] = len(client_tr[i])
+        self.weight = self.weight / self.weight.sum()
+        from copy import deepcopy
+        self.weight_use = deepcopy(self.weight)
+        print("client training numbers", self.client_number)
+    def print_state(self):
+        print("modified state:", self.is_modified)
+    def server_update(self, client_list, client_tr, EO_list, ACC_list):
+        # updata the server
+        # input: the list of clients
+        # modify the self.network
+        F_global = 0
+        acc_global = 0
+        for i in range(len(EO_list)):
+            F_global = self.client_number[i] * EO_list[i]/self.client_number.sum()
+            acc_global = self.client_number[i] * ACC_list[i]/self.client_number.sum()
+        delta_vector = torch.ones(self.hparams['n_client'])
+        for i in range(len(EO_list)):
+            delta_vector[i] = (F_global - EO_list[i])
+            if delta_vector[i] < 0:
+                delta_vector[i] = -delta_vector[i]
+        delta_global = delta_vector.mean()
+        for i in range(len(EO_list)):
+            self.weight[i] = self.weight[i] - self.beta * (delta_vector[i] - delta_global)
+        for i in range(len(EO_list)):
+            self.weight_use[i] = self.weight[i]/self.weight.sum()
+        self.is_modified = 1
+        worker_state_dict = [x.network.state_dict() for x in client_list]
+        weight_keys = list(worker_state_dict[0].keys())
+        fed_state_dict = collections.OrderedDict()
+        for key in weight_keys:
+            key_sum = 0
+            for i in range(len(client_list)):
+                key_sum = key_sum + worker_state_dict[i][key] * self.weight_use[i]
+            fed_state_dict[key] = key_sum / len(client_list)
+        #### update server weights
+        self.network.load_state_dict(fed_state_dict)
+        for model in client_list:
+            model.network.load_state_dict(fed_state_dict)
+    
+    def update(self, X, Y):
+        
+        loss = F.cross_entropy(self.predict(X), Y).mean()
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'loss': loss.item()}
+
+    def predict(self, X):
+        return self.network(X)
+    
+class DIPOLE(torch.nn.Module):
+    """
+    Improving Fairness in AI Models on Electronic Health Records: The Case for Federated Learning Methods
+    """
+
+    def __init__(self, input_shape, num_classes, hparams, client_tr, is_server = 0):
+        super(DIPOLE, self).__init__()
+        self.is_modified = 0 # to check if the client is modifier
+        self.is_server = is_server # -1: server, otherwise: number of the clients
+        self.num_classes = num_classes
+        self.num_attr = num_classes
+        self.hparams = hparams
+        self.beta = hparams['beta']
+        if hparams['backbone'] == "MLP":
+            self.featurizer = MLP(input_shape, num_classes, self.hparams)
+            self.classifier = Classifier(
+            self.featurizer.n_outputs,
+            num_classes,
+            self.hparams['nonlinear'])
+            self.network = nn.Sequential(self.featurizer, self.classifier)
+        else:
+            self.featurizer = nn.Linear(input_shape, num_classes)
+            self.network = self.featurizer
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+        ) 
+        # initialize the weight vector
+        self.client_number = torch.ones(hparams['n_client'])
+        self.weight = torch.ones(hparams['n_client'])
+        for i in range(hparams['n_client']):
+            self.weight[i] = len(client_tr[i])
+            self.client_number[i] = len(client_tr[i])
+        self.weight = self.weight / self.weight.sum()
+        from copy import deepcopy
+        self.weight_use = deepcopy(self.weight)
+        print("client training numbers", self.client_number)
+    def print_state(self):
+        print("modified state:", self.is_modified)
+    def server_update(self, client_list, client_tr, EO_list, ACC_list):
+        # updata the server
+        # input: the list of clients
+        # modify the self.network
+        F_global = 0
+        acc_global = 0
+        EO_max = 0
+        for i in range(len(EO_list)):
+            F_global = self.client_number[i] * EO_list[i]/self.client_number.sum()
+            acc_global = self.client_number[i] * ACC_list[i]/self.client_number.sum()
+            if EO_max < EO_list[i]:
+                EO_max = EO_list[i]
+        
+        for i in range(len(EO_list)):
+            self.weight[i] = self.weight[i] + self.beta * (EO_max - EO_list[i])
+
+        for i in range(len(EO_list)):
+            self.weight_use[i] = self.weight[i]/self.weight.sum()
+        self.is_modified = 1
+        worker_state_dict = [x.network.state_dict() for x in client_list]
+        weight_keys = list(worker_state_dict[0].keys())
+        fed_state_dict = collections.OrderedDict()
+        for key in weight_keys:
+            key_sum = 0
+            for i in range(len(client_list)):
+                key_sum = key_sum + worker_state_dict[i][key] * self.weight_use[i]
+            fed_state_dict[key] = key_sum / len(client_list)
+        #### update server weights
+        self.network.load_state_dict(fed_state_dict)
+        for model in client_list:
+            model.network.load_state_dict(fed_state_dict)
+    
+    def update(self, X, Y):
+        
+        loss = F.cross_entropy(self.predict(X), Y).mean()
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'loss': loss.item()}
+
+    def predict(self, X):
+        return self.network(X)
+    
 class Global(FedAvg):
     """
     Global model.
@@ -160,6 +339,31 @@ class Split(FedAvg):
         pass
 
 def euclidean_proj_simplex(v, s=1):
+    """ Compute the Euclidean projection on a positive simplex
+    Solves the optimisation problem (using the algorithm from [1]):
+        min_w 0.5 * || w - v ||_2^2 , s.t. \sum_i w_i = s, w_i >= 0 
+    Parameters
+    ----------
+    v: (n,) numpy array,
+       n-dimensional vector to project
+    s: int, optional, default: 1,
+       radius of the simplex
+    Returns
+    -------
+    w: (n,) numpy array,
+       Euclidean projection of v on the simplex
+    Notes
+    -----
+    The complexity of this algorithm is in O(n log(n)) as it involves sorting v.
+    Better alternatives exist for high-dimensional sparse vectors (cf. [1])
+    However, this implementation still easily scales to millions of dimensions.
+    References
+    ----------
+    [1] Efficient Projections onto the .1-Ball for Learning in High Dimensions
+        John Duchi, Shai Shalev-Shwartz, Yoram Singer, and Tushar Chandra.
+        International Conference on Machine Learning (ICML 2008)
+        http://www.cs.berkeley.edu/~jduchi/projects/DuchiSiShCh08.pdf
+    """
     assert s > 0, "Radius s must be strictly positive (%d <= 0)" % s
     n, = v.shape  # will raise ValueError if v is not 1-D
     # check if we are already on the simplex
@@ -231,14 +435,14 @@ def solve_inner_eta(w_sort, w_sort_cumsum, nn, lam, rho):
 
 
         
-class FedUFO(FedAvg):
+class FMDA(FedAvg):
     """
     Our method with ERM.
     For the N * M case.
     """
 
     def __init__(self, input_shape, num_classes, hparams, is_server = 0):
-        super(FedUFO, self).__init__(input_shape, num_classes, hparams, is_server)
+        super(FMDA, self).__init__(input_shape, num_classes, hparams, is_server)
         self.n_client = hparams['n_client']
         self.lambda_mat = torch.ones((hparams['n_client'],num_classes)) * 1.0 / (hparams['n_client'] * num_classes) 
         self.momentum_beta = hparams['momentum_beta']
@@ -252,7 +456,7 @@ class FedUFO(FedAvg):
             X, Y = next(test_minibatches_iterator)
             Y_hat = self.predict(X)
             loss = F.cross_entropy(Y_hat, Y)
-            loss_sum = loss_sum + loss / (step_per_epoch * hparams["batch_size"])
+            loss_sum = loss_sum + loss / (step_per_epoch)
     
         return loss_sum   
     def evaluate_loss_mat(self, te_dataset, hparams):
@@ -275,7 +479,7 @@ class FedUFO(FedAvg):
         old_state_dict = self.network.state_dict() # for momentum update
         weight_keys = list(worker_state_dict[0].keys())
         fed_state_dict = collections.OrderedDict()
-        #print(self.w)
+
         # step 2: updata the model using the weight vector
 
         for index, key in enumerate(weight_keys):
@@ -290,7 +494,7 @@ class FedUFO(FedAvg):
         # step 4: get the loss on training set of clients and update the w vector
         # matrix: n_client * n_dataset
         loss_mat = self.evaluate_loss_mat(client_tr, self.hparams)
-        E = self.hparams['epoch_per_commu']
+        E = self.hparams['n_step']/25
         gamma = self.hparams['gamma']
         from copy import deepcopy
         old_lambda_mat = self.lambda_mat * 1.0 # for momemtum update
@@ -317,7 +521,7 @@ class FedUFO(FedAvg):
         self.optimizer.step()
         
         return {'loss': loss.item()}
-class FedUFO_2(FedAvg):
+class FMDA_2(FedAvg):
     """
     Our method with ERM.
     For the N * M case.
@@ -325,7 +529,7 @@ class FedUFO_2(FedAvg):
     """
 
     def __init__(self, input_shape, num_classes, hparams, is_server = 0):
-        super(FedUFO_2, self).__init__(input_shape, num_classes, hparams, is_server)
+        super(FMDA_2, self).__init__(input_shape, num_classes, hparams, is_server)
         
         self.n_client = hparams['n_client']
         self.num_attr = 2
@@ -342,7 +546,7 @@ class FedUFO_2(FedAvg):
             X, Y = next(test_minibatches_iterator)
             Y_hat = self.predict(X)
             loss = F.cross_entropy(Y_hat, Y)
-            loss_sum = loss_sum + loss / (step_per_epoch * hparams["batch_size"])
+            loss_sum = loss_sum + loss / (step_per_epoch)
     
         return loss_sum   
     def evaluate_loss_mat(self, te_dataset, hparams):
@@ -365,7 +569,7 @@ class FedUFO_2(FedAvg):
         old_state_dict = self.network.state_dict() # for momentum update
         weight_keys = list(worker_state_dict[0].keys())
         fed_state_dict = collections.OrderedDict()
-        #print(self.w)
+
         # step 2: updata the model using the weight vector
 
         for index, key in enumerate(weight_keys):
@@ -380,7 +584,7 @@ class FedUFO_2(FedAvg):
         # step 4: get the loss on training set of clients and update the w vector
         # matrix: n_client * n_dataset
         loss_mat = self.evaluate_loss_mat(client_tr, self.hparams)
-        E = self.hparams['epoch_per_commu']
+        E = self.hparams['n_step']/25
         gamma = self.hparams['gamma']
         from copy import deepcopy
         old_lambda_mat = self.lambda_mat * 1.0 # for momemtum update
@@ -416,7 +620,7 @@ class FedUFO_2(FedAvg):
         self.optimizer.step()
         
         return {'loss': loss.item()}
-class FedUFO_22(FedAvg):
+class FMDA_22(FedAvg):
     """
     Our method with ERM.
     For the N * M case.
@@ -424,7 +628,7 @@ class FedUFO_22(FedAvg):
     """
 
     def __init__(self, input_shape, num_classes, hparams, is_server = 0):
-        super(FedUFO_22, self).__init__(input_shape, num_classes, hparams, is_server)
+        super(FMDA_22, self).__init__(input_shape, num_classes, hparams, is_server)
         self.n_client = hparams['n_client']
         self.num_attr = 2 * num_classes
         self.num_classes = num_classes
@@ -433,7 +637,7 @@ class FedUFO_22(FedAvg):
         self.momentum_lambda = hparams['momentum_lambda']
     def evaluate_loss_self(self, test_data, hparams):
         step_per_epoch = int(len(test_data) / hparams['batch_size'])
-        #print("len(test_data):", len(test_data))
+
         if len(test_data) > 0:
             test_loaders = DataLoader(test_data, batch_size = hparams['batch_size'], shuffle=True)
             test_minibatches_iterator = iter(test_loaders)
@@ -442,7 +646,7 @@ class FedUFO_22(FedAvg):
                 X, Y = next(test_minibatches_iterator)
                 Y_hat = self.predict(X)
                 loss = F.cross_entropy(Y_hat, Y)
-                loss_sum = loss_sum + loss / (step_per_epoch * hparams["batch_size"])
+                loss_sum = loss_sum + loss / (step_per_epoch)
     
             return loss_sum   
         else:
@@ -468,7 +672,7 @@ class FedUFO_22(FedAvg):
         old_state_dict = self.network.state_dict() # for momentum update
         weight_keys = list(worker_state_dict[0].keys())
         fed_state_dict = collections.OrderedDict()
-        #print(self.w)
+
         # step 2: updata the model using the weight vector
 
         for index, key in enumerate(weight_keys):
@@ -483,7 +687,7 @@ class FedUFO_22(FedAvg):
         # step 4: get the loss on training set of clients and update the w vector
         # matrix: n_client * n_dataset
         loss_mat = self.evaluate_loss_mat(client_tr, self.hparams)
-        E = self.hparams['epoch_per_commu']
+        E = self.hparams['n_step']/25
         gamma = self.hparams['gamma']
         from copy import deepcopy
         old_lambda_mat = self.lambda_mat * 1.0 # for momemtum update
@@ -521,14 +725,391 @@ class FedUFO_22(FedAvg):
         self.optimizer.step()
         
         return {'loss': loss.item()}
-class FedUFO_M_N(FedAvg):
+class FMDA_4(FedAvg):
+    """
+    Our method with ERM.
+    For the N * M case.
+    # Only for SEER.
+    """
+
+    def __init__(self, input_shape, num_classes, hparams, is_server = 0):
+        super(FMDA_4, self).__init__(input_shape, num_classes, hparams, is_server)
+        self.n_client = hparams['n_client']
+        self.num_attr = 2 * num_classes
+        self.num_classes = num_classes
+        self.lambda_mat = torch.ones((hparams['n_client'],2 * num_classes)) * 1.0 / (hparams['n_client'] * (2 * num_classes)) # sensitive: 2 
+        self.momentum_beta = hparams['momentum_beta']
+        self.momentum_lambda = hparams['momentum_lambda']
+    def evaluate_loss_self(self, test_data, hparams):
+        step_per_epoch = int(len(test_data) / hparams['batch_size'])
+        #print("len(test_data):", len(test_data))
+        if len(test_data) > 0:
+            test_loaders = DataLoader(test_data, batch_size = hparams['batch_size'], shuffle=True)
+            test_minibatches_iterator = iter(test_loaders)
+            loss_sum = 0
+            for step in range(step_per_epoch):
+                X, Y = next(test_minibatches_iterator)
+                Y_hat = self.predict(X)
+                loss = F.cross_entropy(Y_hat, Y)
+                loss_sum = loss_sum + loss / (step_per_epoch)
+    
+            return loss_sum   
+        else:
+            # this combination is null return a zero
+            return 0
+    def evaluate_loss_mat(self, te_dataset, hparams):
+        # evaluate the performance of the client models
+        loss_mat = torch.zeros((len(te_dataset),self.num_attr))
+        for id_te, te in enumerate (te_dataset):#id_te == id_client
+            attr_list = te.split_by_attr_4(self.num_attr, self.hparams['sens_index'])
+            for id_attr, attr in enumerate(attr_list):
+                loss = self.evaluate_loss_self(attr, hparams)
+                loss_mat[id_te, id_attr] = loss
+        return loss_mat
+    def server_update(self, client_list, client_tr):
+        # updata the server
+        # input: the list of clients
+        # modify the self.network using our method
+
+        # step 1: get the parameters
+        self.is_modified = 1
+        worker_state_dict = [x.network.state_dict() for x in client_list]
+        old_state_dict = self.network.state_dict() # for momentum update
+        weight_keys = list(worker_state_dict[0].keys())
+        fed_state_dict = collections.OrderedDict()
+
+        # step 2: updata the model using the weight vector
+
+        for index, key in enumerate(weight_keys):
+            key_sum = 0
+            for i in range(len(client_list)):
+                key_sum = key_sum + worker_state_dict[i][key] * 1 / self.n_client
+            fed_state_dict[key] = key_sum * (1 + self.momentum_beta) - self.momentum_beta * old_state_dict[key]
+        # step 3: update server weights
+        self.network.load_state_dict(fed_state_dict)
+        for model in client_list:
+            model.network.load_state_dict(fed_state_dict)
+        # step 4: get the loss on training set of clients and update the w vector
+        # matrix: n_client * n_dataset
+        loss_mat = self.evaluate_loss_mat(client_tr, self.hparams)
+        E = self.hparams['n_step']/25
+        gamma = self.hparams['gamma']
+        from copy import deepcopy
+        old_lambda_mat = self.lambda_mat * 1.0 # for momemtum update
+        lambda_mat = (self.lambda_mat).log() + (E * gamma * loss_mat)
+        lambda_mat = (lambda_mat - (lambda_mat.exp().sum()).log()).exp()
+        self.lambda_mat = lambda_mat * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat # will be sent to server
+        self.lambda_mat = self.lambda_mat / self.lambda_mat.sum() #normalization
+        
+        # for the rad
+        if self.hparams['rad'] > 0:
+            for i in range(self.lambda_mat.shape[0]):
+                self.lambda_mat[i, :] =  project_onto_chi_square_ball(self.lambda_mat[i, :].detach(), self.hparams['rad'])
+        return self.lambda_mat.detach()
+    def set_lambda_mat(self, lambda_mat):
+        self.lambda_mat = lambda_mat
+    def update(self, X, Y):
+        # update based on the number
+        # sen 1: 1 * 2 + label_number 
+        # sen 0: 0 * 2 + label_number
+        w = self.lambda_mat[self.is_server, :]
+        sen = X[:, self.hparams['sens_index']]
+        
+        
+        w_temp = torch.zeros(X.shape[0]).to("cpu")
+        for i in range(X.shape[0]):
+            if sen[i] == 1:
+                w_temp[i] = w[self.num_classes + Y[i]]
+            else:
+                w_temp[i] = w[Y[i]]
+            
+        loss = (F.cross_entropy(self.predict(X), Y, reduce = False) * w_temp).mean()
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'loss': loss.item()}
+class FMDA_M_4(FedAvg):
     """
     Our method with ERM.
     For the M + N case.
     """
 
     def __init__(self, input_shape, num_classes, hparams, is_server = 0):
-        super(FedUFO_M_N, self).__init__(input_shape, num_classes, hparams, is_server)
+        super(FMDA_M_4, self).__init__(input_shape, num_classes, hparams, is_server)
+        self.A_C_alpha = self.hparams['A_C_alpha']
+        self.n_client = hparams['n_client']
+        self.num_attr = 2 * num_classes
+        self.lambda_mat_A = torch.ones(num_classes * 2) * 1.0 / (num_classes * 2) 
+        self.lambda_mat_C = torch.ones(hparams['n_client']) * 1.0 / (hparams['n_client']) #no use, hence no modification
+        self.momentum_beta = hparams['momentum_beta']
+        self.momentum_lambda = hparams['momentum_lambda']
+    def evaluate_loss_self(self, test_data, hparams):
+        step_per_epoch = int(len(test_data) / hparams['batch_size'])
+        test_loaders = DataLoader(test_data, batch_size = hparams['batch_size'], shuffle=True)
+        test_minibatches_iterator = iter(test_loaders)
+        loss_sum = 0
+        for step in range(step_per_epoch):
+            X, Y = next(test_minibatches_iterator)
+            Y_hat = self.predict(X)
+            loss = F.cross_entropy(Y_hat, Y)
+            loss_sum = loss_sum + loss / (step_per_epoch)
+    
+        return loss_sum   
+    def evaluate_loss_mat(self, te_dataset, hparams):
+        # evaluate the performance of the client models
+        loss_mat = torch.zeros((len(te_dataset),self.num_attr))
+        number_mat = torch.zeros((len(te_dataset),self.num_attr))
+        for id_te, te in enumerate (te_dataset):#id_te == id_client
+            attr_list, number_vector = te.split_by_attr_4(self.num_attr, self.hparams['sens_index'])
+            for id_attr, attr in enumerate(attr_list):
+                loss = self.evaluate_loss_self(attr, hparams)
+                loss_mat[id_te, id_attr] = loss
+                number_mat[id_te, id_attr] = number_vector[id_attr]
+        return loss_mat, number_mat
+    def server_update(self, client_list, client_tr):
+        # updata the server
+        # input: the list of clients
+        # modify the self.network using our method
+
+        # step 1: get the parameters
+        self.is_modified = 1
+        worker_state_dict = [x.network.state_dict() for x in client_list]
+        old_state_dict = self.network.state_dict() # for momentum update
+        weight_keys = list(worker_state_dict[0].keys())
+        fed_state_dict = collections.OrderedDict()
+
+        # step 2: updata the model using the weight vector
+
+        for index, key in enumerate(weight_keys):
+            key_sum = 0
+            for i in range(len(client_list)):
+                key_sum = key_sum + worker_state_dict[i][key] * 1 / self.n_client
+            fed_state_dict[key] = key_sum * (1 + self.momentum_beta) - self.momentum_beta * old_state_dict[key]
+        # step 3: update server weights
+        self.network.load_state_dict(fed_state_dict)
+        for model in client_list:
+            model.network.load_state_dict(fed_state_dict)
+        # step 4: get the loss on training set of clients and update the w vector
+        # matrix: n_client * n_dataset
+        loss_mat, number_mat = self.evaluate_loss_mat(client_tr, self.hparams)
+        E = self.hparams['n_step']/25
+        gamma = self.hparams['gamma']
+        
+        
+        from copy import deepcopy
+        old_lambda_mat_A = self.lambda_mat_A * 1.0 # for momemtum update
+        loss_vector_A = torch.ones(loss_mat.shape[1]) * 1.0
+        for i in range(loss_mat.shape[1]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[0]):
+                temp_sum += loss_mat[j,i] * number_mat[j,i]/number_mat[:,i].sum()
+            loss_vector_A[i] = temp_sum
+        lambda_mat_A = (self.lambda_mat_A).log() + (E * gamma * loss_vector_A)
+        
+        
+        
+        lambda_mat_A = (lambda_mat_A - (lambda_mat_A.exp().sum()).log()).exp()
+        self.lambda_mat_A = lambda_mat_A * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_A # will be sent to server
+        self.lambda_mat_A = self.lambda_mat_A / self.lambda_mat_A.sum() #normalization
+        
+        old_lambda_mat_C = self.lambda_mat_C * 1.0 # for momemtum update
+        loss_vector_C = torch.ones(self.hparams['n_client']) * 1.0
+        for i in range(loss_mat.shape[0]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[1]):
+                temp_sum += loss_mat[i,j] * number_mat[i,j]/number_mat[i,:].sum()
+            loss_vector_C[i] = temp_sum
+        lambda_mat_C = (self.lambda_mat_C).log() + (E * gamma * loss_vector_C)
+        
+        
+        
+        lambda_mat_C = (lambda_mat_C - (lambda_mat_C.exp().sum()).log()).exp()
+        self.lambda_mat_C = lambda_mat_C * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_C # will be sent to server
+        self.lambda_mat_C = self.lambda_mat_C / self.lambda_mat_C.sum() #normalization
+
+        # for the rad
+        if self.hparams['rad'] > 0:
+            print("server update", self.lambda_mat_A)
+            self.lambda_mat_A =  project_onto_chi_square_ball(self.lambda_mat_A.detach(), self.hparams['rad'])
+            self.lambda_mat_C =  project_onto_chi_square_ball(self.lambda_mat_C.detach(), self.hparams['rad'])
+            
+        self.lambda_mat_A = self.lambda_mat_A / self.lambda_mat_A.sum() #normalization
+        self.lambda_mat_C = self.lambda_mat_C / self.lambda_mat_C.sum() #normalization
+        
+        return self.lambda_mat_A.detach(), self.lambda_mat_C.detach()
+    
+    
+    
+    def set_lambda_mat(self, lambda_mat_A, lambda_mat_C):
+        self.lambda_mat_A = lambda_mat_A
+        self.lambda_mat_C = lambda_mat_C
+    def update(self, X, Y):
+        # update based on the number
+        # sen 1: 1 * 2 + label_number 
+        # sen 0: 0 * 2 + label_number
+        w = self.lambda_mat_A
+        sen = X[:, self.hparams['sens_index']]
+        
+        w_temp = torch.zeros(X.shape[0]).to("cpu")
+        for i in range(X.shape[0]):
+            if sen[i] == 1:
+                w_temp[i] = w[self.num_classes + Y[i]]
+            else:
+                w_temp[i] = w[Y[i]]
+            
+        loss = (F.cross_entropy(self.predict(X), Y, reduce = False) * w_temp).mean()
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'loss': loss.item()}
+class FMDA_M_22(FedAvg):
+    """
+    Our method with ERM.
+    For the M + N case.
+    """
+
+    def __init__(self, input_shape, num_classes, hparams, is_server = 0):
+        super(FMDA_M_4, self).__init__(input_shape, num_classes, hparams, is_server)
+        self.A_C_alpha = self.hparams['A_C_alpha']
+        self.n_client = hparams['n_client']
+        self.num_attr = 2 * num_classes
+        self.lambda_mat_A = torch.ones(num_classes * 11) * 1.0 / (num_classes * 11) 
+        self.lambda_mat_C = torch.ones(hparams['n_client']) * 1.0 / (hparams['n_client']) #no use, hence no modification
+        self.momentum_beta = hparams['momentum_beta']
+        self.momentum_lambda = hparams['momentum_lambda']
+    def evaluate_loss_self(self, test_data, hparams):
+        step_per_epoch = int(len(test_data) / hparams['batch_size'])
+        test_loaders = DataLoader(test_data, batch_size = hparams['batch_size'], shuffle=True)
+        test_minibatches_iterator = iter(test_loaders)
+        loss_sum = 0
+        for step in range(step_per_epoch):
+            X, Y = next(test_minibatches_iterator)
+            Y_hat = self.predict(X)
+            loss = F.cross_entropy(Y_hat, Y)
+            loss_sum = loss_sum + loss / (step_per_epoch)
+    
+        return loss_sum   
+    def evaluate_loss_mat(self, te_dataset, hparams):
+        # evaluate the performance of the client models
+        loss_mat = torch.zeros((len(te_dataset),self.num_attr))
+        number_mat = torch.zeros((len(te_dataset),self.num_attr))
+        for id_te, te in enumerate (te_dataset):#id_te == id_client
+            attr_list, number_vector = te.split_by_attr_22(self.num_attr, self.hparams['sens_index'])
+            for id_attr, attr in enumerate(attr_list):
+                loss = self.evaluate_loss_self(attr, hparams)
+                loss_mat[id_te, id_attr] = loss
+                number_mat[id_te, id_attr] = number_vector[id_attr]
+        return loss_mat, number_mat
+    def server_update(self, client_list, client_tr):
+        # updata the server
+        # input: the list of clients
+        # modify the self.network using our method
+
+        # step 1: get the parameters
+        self.is_modified = 1
+        worker_state_dict = [x.network.state_dict() for x in client_list]
+        old_state_dict = self.network.state_dict() # for momentum update
+        weight_keys = list(worker_state_dict[0].keys())
+        fed_state_dict = collections.OrderedDict()
+
+        # step 2: updata the model using the weight vector
+
+        for index, key in enumerate(weight_keys):
+            key_sum = 0
+            for i in range(len(client_list)):
+                key_sum = key_sum + worker_state_dict[i][key] * 1 / self.n_client
+            fed_state_dict[key] = key_sum * (1 + self.momentum_beta) - self.momentum_beta * old_state_dict[key]
+        # step 3: update server weights
+        self.network.load_state_dict(fed_state_dict)
+        for model in client_list:
+            model.network.load_state_dict(fed_state_dict)
+        # step 4: get the loss on training set of clients and update the w vector
+        # matrix: n_client * n_dataset
+        loss_mat, number_mat = self.evaluate_loss_mat(client_tr, self.hparams)
+        E = self.hparams['n_step']/25
+        gamma = self.hparams['gamma']
+        
+        
+        from copy import deepcopy
+        old_lambda_mat_A = self.lambda_mat_A * 1.0 # for momemtum update
+        loss_vector_A = torch.ones(loss_mat.shape[1]) * 1.0
+        for i in range(loss_mat.shape[1]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[0]):
+                temp_sum += loss_mat[j,i] * number_mat[j,i]/number_mat[:,i].sum()
+            loss_vector_A[i] = temp_sum
+        lambda_mat_A = (self.lambda_mat_A).log() + (E * gamma * loss_vector_A)
+        
+        
+        
+        lambda_mat_A = (lambda_mat_A - (lambda_mat_A.exp().sum()).log()).exp()
+        self.lambda_mat_A = lambda_mat_A * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_A # will be sent to server
+        self.lambda_mat_A = self.lambda_mat_A / self.lambda_mat_A.sum() #normalization
+        
+        old_lambda_mat_C = self.lambda_mat_C * 1.0 # for momemtum update
+        loss_vector_C = torch.ones(self.hparams['n_client']) * 1.0
+        for i in range(loss_mat.shape[0]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[1]):
+                temp_sum += loss_mat[i,j] * number_mat[i,j]/number_mat[i,:].sum()
+            loss_vector_C[i] = temp_sum
+        lambda_mat_C = (self.lambda_mat_C).log() + (E * gamma * loss_vector_C)
+        
+        
+        
+        lambda_mat_C = (lambda_mat_C - (lambda_mat_C.exp().sum()).log()).exp()
+        self.lambda_mat_C = lambda_mat_C * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_C # will be sent to server
+        self.lambda_mat_C = self.lambda_mat_C / self.lambda_mat_C.sum() #normalization
+
+        # for the rad
+        if self.hparams['rad'] > 0:
+            print("server update", self.lambda_mat_A)
+            self.lambda_mat_A =  project_onto_chi_square_ball(self.lambda_mat_A.detach(), self.hparams['rad'])
+            self.lambda_mat_C =  project_onto_chi_square_ball(self.lambda_mat_C.detach(), self.hparams['rad'])
+            
+        self.lambda_mat_A = self.lambda_mat_A / self.lambda_mat_A.sum() #normalization
+        self.lambda_mat_C = self.lambda_mat_C / self.lambda_mat_C.sum() #normalization
+        
+        return self.lambda_mat_A.detach(), self.lambda_mat_C.detach()
+    
+    
+    
+    def set_lambda_mat(self, lambda_mat_A, lambda_mat_C):
+        self.lambda_mat_A = lambda_mat_A
+        self.lambda_mat_C = lambda_mat_C
+    def update(self, X, Y):
+        # update based on the number
+        # sen 1: 1 * 2 + label_number 
+        # sen 0: 0 * 2 + label_number
+        w = self.lambda_mat_A
+        sen = X[:, self.hparams['sens_index']]
+        
+        w_temp = torch.zeros(X.shape[0]).to("cpu")
+        for i in range(X.shape[0]):
+            if sen[i] == 1:
+                w_temp[i] = w[self.num_classes + Y[i]]
+            else:
+                w_temp[i] = w[Y[i]]
+            
+        loss = (F.cross_entropy(self.predict(X), Y, reduce = False) * w_temp).mean()
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'loss': loss.item()}
+class FMDA_M_N(FedAvg):
+    """
+    Our method with ERM.
+    For the M + N case.
+    """
+
+    def __init__(self, input_shape, num_classes, hparams, is_server = 0):
+        super(FMDA_M_N, self).__init__(input_shape, num_classes, hparams, is_server)
         self.A_C_alpha = self.hparams['A_C_alpha']
         self.n_client = hparams['n_client']
         self.lambda_mat_A = torch.ones(num_classes) * 1.0 / (num_classes) 
@@ -544,18 +1125,20 @@ class FedUFO_M_N(FedAvg):
             X, Y = next(test_minibatches_iterator)
             Y_hat = self.predict(X)
             loss = F.cross_entropy(Y_hat, Y)
-            loss_sum = loss_sum + loss / (step_per_epoch * hparams["batch_size"])
+            loss_sum = loss_sum + loss / (step_per_epoch)
     
         return loss_sum   
     def evaluate_loss_mat(self, te_dataset, hparams):
         # evaluate the performance of the client models
         loss_mat = torch.zeros((len(te_dataset),self.num_attr))
+        number_mat = torch.zeros((len(te_dataset),self.num_attr))
         for id_te, te in enumerate (te_dataset):#id_te == id_client
-            attr_list = te.split_by_attr()
+            attr_list, number_vector = te.split_by_attr_overall()
             for id_attr, attr in enumerate(attr_list):
                 loss = self.evaluate_loss_self(attr, hparams)
                 loss_mat[id_te, id_attr] = loss
-        return loss_mat
+                number_mat[id_te, id_attr] = number_vector[id_attr]
+        return loss_mat, number_mat
     def server_update(self, client_list, client_tr):
         # updata the server
         # input: the list of clients
@@ -581,25 +1164,42 @@ class FedUFO_M_N(FedAvg):
             model.network.load_state_dict(fed_state_dict)
         # step 4: get the loss on training set of clients and update the w vector
         # matrix: n_client * n_dataset
-        loss_mat = self.evaluate_loss_mat(client_tr, self.hparams)
-        E = self.hparams['epoch_per_commu']
+        loss_mat, number_mat = self.evaluate_loss_mat(client_tr, self.hparams)
+        E = self.hparams['n_step']/25
         gamma = self.hparams['gamma']
         
         
         from copy import deepcopy
         old_lambda_mat_A = self.lambda_mat_A * 1.0 # for momemtum update
-        lambda_mat_A = (self.lambda_mat_A).log() + (E * gamma * loss_mat.sum(dim = 0))
+        loss_vector_A = torch.ones(loss_mat.shape[1]) * 1.0
+        for i in range(loss_mat.shape[1]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[0]):
+                temp_sum += loss_mat[j,i] * number_mat[j,i]/number_mat[:,i].sum()
+            loss_vector_A[i] = temp_sum
+        lambda_mat_A = (self.lambda_mat_A).log() + (E * gamma * loss_vector_A)
+        
+        
+        
         lambda_mat_A = (lambda_mat_A - (lambda_mat_A.exp().sum()).log()).exp()
         self.lambda_mat_A = lambda_mat_A * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_A # will be sent to server
         self.lambda_mat_A = self.lambda_mat_A / self.lambda_mat_A.sum() #normalization
         
         old_lambda_mat_C = self.lambda_mat_C * 1.0 # for momemtum update
-        lambda_mat_C = (self.lambda_mat_C).log() + (E * gamma * loss_mat.sum(dim = 1))
+        loss_vector_C = torch.ones(self.hparams['n_client']) * 1.0
+        for i in range(loss_mat.shape[0]):
+            temp_sum = 0
+            for j in range(loss_mat.shape[1]):
+                temp_sum += loss_mat[i,j] * number_mat[i,j]/number_mat[i,:].sum()
+            loss_vector_C[i] = temp_sum
+        lambda_mat_C = (self.lambda_mat_C).log() + (E * gamma * loss_vector_C)
+        
+        
+        
         lambda_mat_C = (lambda_mat_C - (lambda_mat_C.exp().sum()).log()).exp()
         self.lambda_mat_C = lambda_mat_C * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat_C # will be sent to server
         self.lambda_mat_C = self.lambda_mat_C / self.lambda_mat_C.sum() #normalization
-        #print("lambda_mat_A: ", lambda_mat_A)
-        #print("lambda_mat_C: ",lambda_mat_C)
+
         # for the rad
         if self.hparams['rad'] > 0:
             print("server update", self.lambda_mat_A)
@@ -628,115 +1228,7 @@ class FedUFO_M_N(FedAvg):
         self.optimizer.step()
         
         return {'loss': loss.item()}
-class FedUFO_Ind(FedAvg):
-    """
-    Our method with ERM.
-    For the N * M case.
-    Only for Individual datasets.
-    """
 
-    def __init__(self, input_shape, num_classes, hparams, len_dataset, is_server = 0):
-        super(FedUFO_Ind, self).__init__(input_shape - 1, num_classes, hparams, is_server)
-        self.n_client = hparams['n_client']
-        #self.lambda_mat = torch.ones((hparams['n_client'],num_classes)) * 1.0 / (hparams['n_client'] * num_classes) 
-        self.momentum_beta = hparams['momentum_beta']
-        self.momentum_lambda = hparams['momentum_lambda']
-        
-        # for individual
-        #print(len_dataset)
-        self.lambda_mat = torch.ones(len_dataset) / len_dataset
-        self.dict = torch.zeros(len_dataset) # for searching. X['id']->self.dict
-        self.len_dataset = len_dataset
-    def set_dict(self, test_data):
-        #total_dataset: including the testing data
-        step_per_epoch = int(len(test_data) / 1)
-        test_loaders = DataLoader(test_data, batch_size = 1, shuffle=True)
-        test_minibatches_iterator = iter(test_loaders)
-        for i in range(step_per_epoch):
-            
-            X, Y = next(test_minibatches_iterator)
-            
-            
-            self.dict[X[0,-1].long()] = 1
-        index = 0
-        for i in range(self.len_dataset):
-            if self.dict[i] == 1:
-                self.dict[i] = index
-                index = index + 1
-        #print(self.dict)
-    def evaluate_loss_mat(self, test_data, hparams):
-        # use the total training dataset
-        # evaluate the performance of the client models
-        loss_mat = torch.zeros(self.len_dataset)
-        step_per_epoch = int(len(test_data) / 1)
-        test_loaders = DataLoader(test_data, batch_size = 1, shuffle=True)
-        test_minibatches_iterator = iter(test_loaders)
-        for i in range(step_per_epoch):
-            
-            X, Y = next(test_minibatches_iterator)
-            
-            Y_hat = self.predict(X[:, :-1])
-            loss = F.cross_entropy(Y_hat, Y)
-            
-        
-        return loss_mat
-    def server_update(self, client_list, client_tr):
-        # updata the server
-        # input: the list of clients
-        # modify the self.network using our method
-
-        # step 1: get the parameters
-        self.is_modified = 1
-        worker_state_dict = [x.network.state_dict() for x in client_list]
-        old_state_dict = self.network.state_dict() # for momentum update
-        weight_keys = list(worker_state_dict[0].keys())
-        fed_state_dict = collections.OrderedDict()
-        #print(self.w)
-        # step 2: updata the model using the weight vector
-
-        for index, key in enumerate(weight_keys):
-            key_sum = 0
-            for i in range(len(client_list)):
-                key_sum = key_sum + worker_state_dict[i][key] * 1 / self.n_client
-            fed_state_dict[key] = key_sum * (1 + self.momentum_beta) - self.momentum_beta * old_state_dict[key]
-        # step 3: update server weights
-        self.network.load_state_dict(fed_state_dict)
-        for model in client_list:
-            model.network.load_state_dict(fed_state_dict)
-        # step 4: get the loss on training set of clients and update the w vector
-        # matrix: n_client * n_dataset
-        loss_mat = self.evaluate_loss_mat(client_tr[0], self.hparams)
-        E = self.hparams['epoch_per_commu']
-        gamma = self.hparams['gamma']
-        from copy import deepcopy
-        old_lambda_mat = self.lambda_mat * 1.0 # for momemtum update
-        lambda_mat = (self.lambda_mat).log() + (E * gamma * loss_mat)
-        lambda_mat = (lambda_mat - (lambda_mat.exp().sum()).log()).exp()
-        self.lambda_mat = lambda_mat * self.momentum_lambda + (1 - self.momentum_lambda) * old_lambda_mat # will be sent to server
-        self.lambda_mat = self.lambda_mat / self.lambda_mat.sum() #normalization
-        
-        # for the rad
-        if self.hparams['rad'] > 0:
-            for i in range(self.lambda_mat.shape[0]):
-                self.lambda_mat[i, :] =  project_onto_chi_square_ball(self.lambda_mat[i, :].detach(), self.hparams['rad'])
-        return self.lambda_mat.detach()
-    def set_lambda_mat(self, lambda_mat):
-        self.lambda_mat = lambda_mat
-    def update(self, X, Y):
-        # update based on the number
-       
-        w = torch.zeros(X.shape[0])
-        
-        for i in range(X.shape[0]):
-            w[i] = self.lambda_mat[self.dict[X[i, -1].long()].long()]
-        print(w.sum())
-        loss = (F.cross_entropy(self.predict(X[:,:-1]), Y, reduce = False) * w).mean()
-        #print(loss)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        return {'loss': loss.item()}
 class AFL(FedAvg):
     """
     Agnostic Federated Learning. (http://proceedings.mlr.press/v97/mohri19a/mohri19a.pdf)
@@ -836,7 +1328,7 @@ class Q_FedAvg(FedAvg):
         weight_keys = list(worker_state_dict[0].keys())
         # step 2: get the loss of each client
         loss_vec = self.evaluate_loss_vec(client_list, client_tr)
-
+        print("server update!")
         # step 3: subtract to get the delta_w
         for index, key in enumerate(weight_keys):
             for i in range(len(client_list)):
