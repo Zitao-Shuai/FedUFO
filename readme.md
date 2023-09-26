@@ -48,3 +48,12 @@ python3 -m FMDA.train\
         --alpha 10
 ```
 
+For datasets that are not provided due to the privacy issue, please apply for authorization through these links:
+
+```
+Support: https://biostat.app.vumc.org/wiki/Main/DataSets
+Cardio(Fetal): https://datahub.io/machine-learning/cardiotocography
+SEER(Prostate): https://seer.cancer.gov/data/
+```
+
+ 
