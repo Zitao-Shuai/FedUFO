@@ -15,13 +15,13 @@ import torchvision
 import torch.utils.data
 from torch.utils.data.dataloader import DataLoader
 from copy import deepcopy
-from FMDA.utils import print_state
-from FMDA.hparams import set_hparams
-from FMDA.datasets import myDataset
-from FMDA import algorithms
-from FMDA.evaluate import evaluate_std_overall, evaluate_std_split_overall,  evaluate_loss_mat, evaluate_EO_mat, evaluate_loss_mat_split,evaluate_loss_mat_Ind
-from FMDA.evaluate import evaluate_acc
-from FMDA import datasets
+from FedUFO.utils import print_state
+from FedUFO.hparams import set_hparams
+from FedUFO.datasets import myDataset
+from FedUFO import algorithms
+from FedUFO.evaluate import evaluate_std_overall, evaluate_std_split_overall,  evaluate_loss_mat, evaluate_EO_mat, evaluate_loss_mat_split
+from FedUFO.evaluate import evaluate_acc
+from FedUFO import datasets
 torch.use_deterministic_algorithms(True)
 
 def seed_torch(seed: int = 42) -> None:
@@ -45,37 +45,31 @@ if __name__ == "__main__":
 
     ################ Processing Inputs ################
     parser = argparse.ArgumentParser(description='FL')
-    parser.add_argument('--data_dir', type=str, default="./FMDA/data/")
+    parser.add_argument('--data_dir', type=str, default="./FedUFO/data/")
     parser.add_argument('--dataset', type=str, default="Support")
     parser.add_argument('--algorithm', type=str, default="FedAvg")
+    parser.add_argument('--type', type=str, default="other")
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--alpha', type=float, default=1.0)
-    parser.add_argument('--gamma', type=float, default=1.0)
-    parser.add_argument('--A_C_alpha', type=float, default=0.5)
+    parser.add_argument('--lr', type=float, default=None)
+    parser.add_argument('--alpha', type=float, default=None)
+    parser.add_argument('--gamma', type=float, default=None)
+    parser.add_argument('--A_C_alpha', type=float, default=None)
     parser.add_argument('--output_dir', type=str, default="./output")
-    parser.add_argument('--n_commu', type=int, default=50)
-    parser.add_argument('--epoch_per_commu', type=int, default=2)
-    parser.add_argument('--n_step', type=int, default= 100)
+    parser.add_argument('--agnostic_alpha', type=float, default=0)
+    parser.add_argument('--test_EO', type=int, default=0)
+    parser.add_argument('--test_Analysis', type=int, default=0)
+    parser.add_argument('--n_commu', type=int, default=None)
+    parser.add_argument('--n_step', type=int, default= None)
     parser.add_argument('--momentum_beta', type=float, default=0)
     parser.add_argument('--momentum_lambda', type=float, default=1)
-    parser.add_argument('--rad', type=float, default=0)
+    parser.add_argument('--rad', type=float, default=None)
     parser.add_argument('--n_client', type=int, default=2)
     parser.add_argument('--holdout_fraction', type=float, default=0.2)
     
     args = parser.parse_args()
     hparams = set_hparams(args)
-    '''
-    if args.algorithm == "Global":
-        hparams["n_client"] = 1
-    '''
-    hparams['alpha'] = args.alpha
-    hparams['gamma'] = args.gamma
-    hparams['A_C_alpha'] = args.A_C_alpha
-    hparams['rad'] = args.rad
-    hparams['n_client'] = args.n_client
-    hparams['n_step'] = args.n_step
-    hparams['lr'] = args.lr
+    
+    
     def save_checkpoint(filename, algorithm):
         save_dict = {
             "args": vars(args),
@@ -174,8 +168,8 @@ if __name__ == "__main__":
     output_results = {'acc_mat':[],'acc_mat_overall':[],'loss_total':[], 'model':[]}
     start_step = 0
     start_commu = 0
-    n_commu = args.n_commu
-    epoch_per_commu = args.epoch_per_commu
+    n_commu = hparams['n_commu']
+    
     
     for commu in range(n_commu):
         # train the clients
@@ -189,7 +183,7 @@ if __name__ == "__main__":
                 step_per_epoch = step_per_epoch + 1
             client_step = 0
             is_stop_local_train = 0
-            for epoch in range(max(epoch_per_commu, 100)):
+            for epoch in range(100):
                 
                 if args.algorithm == "Global":
                     
@@ -202,17 +196,17 @@ if __name__ == "__main__":
                     client_step += 1
                     X, Y = next(train_minibatches_iterator)
                     results_step = client_list[indiv].update(X, Y)
-                    if client_step > args.n_step:
+                    if client_step > hparams['n_step']:
                         is_stop_local_train = 1
                         break
                 if is_stop_local_train == 1:
                     break
         # communication
-        if args.algorithm == "FMDA":
+        if args.algorithm == "FedUFO":
             lambda_mat = server.server_update(client_list, client_tr)
             for indiv in range(hparams['n_client']):
                 client_list[indiv].set_lambda_mat(lambda_mat)
-        elif args.algorithm == "FMDA_M_N":
+        elif args.algorithm == "FedUFO_M_N":
             lambda_mat_A, lambda_mat_C = server.server_update(client_list, client_tr)
             for indiv in range(hparams['n_client']):
                 client_list[indiv].set_lambda_mat(lambda_mat_A, lambda_mat_C)
@@ -294,13 +288,14 @@ if __name__ == "__main__":
         else:
             
             test_server.load_state_dict(output_results["model"][m_id])
-            EO, AP, worst_TPR, overall_acc = evaluate_EO_mat(global_te[0], test_server, hparams)
-        print("EO: ", EO, " AP:", AP)
-        print("worst_TPR:", worst_TPR, "overall:", overall_acc)
+            EO, worst_TPR, overall_acc = evaluate_EO_mat(global_te[0], test_server, hparams)
+        print("EO: ", EO)
+        print("worst_TPR:", worst_TPR)
+        print("overall:", overall_acc)
     
     ###############################
     # averaged
-    print("m_id:",m_id)
+    
     def cal_result(output_acc, output_acc_overall):
         avg_std_attr = 0 
         client_acc_vector = torch.zeros(output_acc.shape[0])
@@ -311,7 +306,7 @@ if __name__ == "__main__":
         worst_attr = 1
         acc_attr_list = torch.zeros(output_acc.shape[1])
         for i in range(output_acc.shape[1]):
-            print(output_acc[:,i])
+            
             acc_temp = output_acc[:,i] * number_mat[:,i] / (number_mat[:,i].sum())
             acc_temp = acc_temp.sum()
             worst_temp = acc_temp
@@ -333,9 +328,9 @@ if __name__ == "__main__":
         avg_std_client = acc_client_list.std()
         ###############################
         # overall acc
-        print("m_id:",m_id)
+        
         avg_mean_overall = 0
-        print(output_acc_overall)
+        
         for i in range(output_acc_overall.shape[0]):
             for j in range(output_acc_overall.shape[1]):
                 avg_mean_overall += output_acc_overall[i,j] * number_mat[i,j]/number_mat.sum() 
@@ -353,20 +348,20 @@ if __name__ == "__main__":
             avg_mean_overall += temp_avg_mean_overall/len(output_results["acc_mat"][m_id])
     else:
         avg_std_attr, avg_std_client, avg_mean, worst_attr, worst_client, avg_mean_overall = cal_result(output_results["acc_mat"][m_id], output_results["acc_mat_overall"][m_id])
-
-    print("avg_std_attr:", avg_std_attr)
-    print("avg_std_client:", avg_std_client)
-    print("avg_mean:", avg_mean) 
+    if hparams["test_EO"] == 0:
+        print("avg_std_attr:", avg_std_attr)
+        print("avg_std_client:", avg_std_client)
+        print("avg_mean:", avg_mean) 
     
-    print("avg worstcase attr acc:", worst_attr)
-    print("avg worstcase client acc:", worst_client)
-    print("avg_mean_overall:", avg_mean_overall) 
+        print("avg worstcase attr acc:", worst_attr)
+        print("avg worstcase client acc:", worst_client)
+        print("avg_mean_overall:", avg_mean_overall) 
     
     
     df = pd.DataFrame(output_results["acc_mat"][m_id])
-    df.to_csv("./FMDA/results/"+str(args.algorithm)+"_"+str(args.dataset) 
+    df.to_csv("./FedUFO/results/"+str(args.algorithm)+"_"+str(args.dataset) 
               + "_gamma" + str(hparams['gamma']) + "_alpha" + str(hparams["alpha"]) 
-              + "_nc" + str(hparams["n_client"]) + "_epoPerCom" + str(hparams["epoch_per_commu"]) + ".csv")
+              + "_nc" + str(hparams["n_client"]) + "_epoPerCom"  + ".csv")
     
 
     with open(os.path.join(args.output_dir, 'done'), 'w') as f:

@@ -16,11 +16,11 @@ import torch.utils.data
 import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 from copy import deepcopy
-from FMDA.utils import print_state
-from FMDA.hparams import set_hparams
-from FMDA.datasets import myDataset
-import FMDA.datasets
-import FMDA.algorithms
+from FedUFO.utils import print_state
+from FedUFO.hparams import set_hparams
+from FedUFO.datasets import myDataset
+import FedUFO.datasets
+import FedUFO.algorithms
 
 def evaluate_acc(test_data, model, hparams):
     step_per_epoch = int(len(test_data) / hparams['batch_size'])
@@ -34,6 +34,7 @@ def evaluate_acc(test_data, model, hparams):
         total_num = len(test_data)
         for step in range(step_per_epoch):
             X, Y = next(test_minibatches_iterator)
+            model.eval()
             Y_hat = model.predict(X)
         
             Y_hat = torch.argmax(Y_hat, dim = 1)
@@ -100,6 +101,7 @@ def evaluate_loss(test_data, model, hparams, mode = None):
         loss_sum = 0
         for step in range(step_per_epoch):
             X, Y = next(test_minibatches_iterator)
+            model.eval()
             Y_hat = model.predict(X)
             loss = F.cross_entropy(Y_hat, Y)
             loss_sum = loss_sum + loss / step_per_epoch
@@ -194,18 +196,17 @@ def evaluate_EO(test_data, model, hparams, mode = None):
             temp4 = (sum8 * 1.0 / sum7)
         
         EO = abs(temp3 - temp4)
-        AP = abs(correct_a0/sum_a0 - correct_a1/sum_a1)
         worst_TPR = min(temp3, temp4)
         overall_acc = correct / sum
-        return EO, AP, worst_TPR, overall_acc
+        return EO, worst_TPR, overall_acc
     else:
         return 0,0
 def evaluate_EO_mat(te, server, hparams, mode = None):
     
-    EO, AP, worst_TPR, overall_acc = evaluate_EO(te, server, hparams)
+    EO, worst_TPR, overall_acc = evaluate_EO(te, server, hparams)
     if EO < 0:
         EO = -EO   
-    return EO, AP, worst_TPR, overall_acc
+    return EO, worst_TPR, overall_acc
 
 def evaluate_std_split_client(te_dataset, server, hparams, idc):
     # don't test the dataset owned by client itself
