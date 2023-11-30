@@ -1,8 +1,6 @@
-Official Implementation of Cell Press Patterns Submission "Unified Fair Federated Learning for Digital Healthcare"
+This is an Official Implementation of FedUFO.
 
-TL;DR: Proposing and achieving unified fairness on federated learning for digital healthcare based on distributionally robust optimization.
-
-The running environment:
+Environment:
 
 ```shell
 Python: 3.8.10
@@ -15,12 +13,13 @@ PIL: 9.3.0
 ```
 
 For running the project:
+
 Example 1: 
 
 ```shell
-python3 -m FMDA.train\
-	    --data_dir ./FMDA/data/\
-        --algorithm FMDA_M_N\
+python3 -m FedUFO.train\
+	    --data_dir ./FedUFO/data/\
+        --algorithm FedUFO_M_N\
         --dataset Covid\
         --type M\
         --alpha 0.5
@@ -29,8 +28,8 @@ python3 -m FMDA.train\
 Example 2:
 
 ```shell
-python3 -m FMDA.train\
-	    --data_dir ./FMDA/data/\
+python3 -m FedUFO.train\
+	    --data_dir ./FedUFO/data/\
         --algorithm FedAvg\
         --dataset Covid\
         --test_EO 1\
@@ -40,20 +39,10 @@ python3 -m FMDA.train\
 Example 3:
 
 ```shell
-python3 -m FMDA.train\
-	    --data_dir ./FMDA/data/\
-        --algorithm FMDA\
+python3 -m FedUFO.train\
+	    --data_dir ./FedUFO/data/\
+        --algorithm FedUFO\
         --dataset SEER\
         --agnostic_alpha 1\
         --alpha 10
 ```
-
-For datasets that are not provided due to the privacy issue, please apply for authorization through these links:
-
-```
-Support: https://biostat.app.vumc.org/wiki/Main/DataSets
-Cardio(Fetal): https://datahub.io/machine-learning/cardiotocography
-SEER(Prostate): https://seer.cancer.gov/data/
-```
-
- 
