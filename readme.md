@@ -18,7 +18,7 @@ Example 1:
 
 ```shell
 python3 -m FedUFO.train\
-	    --data_dir ./FedUFO/data/\
+	--data_dir ./FedUFO/data/\
         --algorithm FedUFO_M_N\
         --dataset Your_Own_Dataset\
         --type M\
@@ -29,7 +29,7 @@ Example 2:
 
 ```shell
 python3 -m FedUFO.train\
-	    --data_dir ./FedUFO/data/\
+	--data_dir ./FedUFO/data/\
         --algorithm FedAvg\
         --dataset Your_Own_Dataset\
         --test_EO 1\
@@ -40,7 +40,7 @@ Example 3:
 
 ```shell
 python3 -m FedUFO.train\
-	    --data_dir ./FedUFO/data/\
+	--data_dir ./FedUFO/data/\
         --algorithm FedUFO\
         --dataset Your_Own_Dataset\
         --agnostic_alpha 1\
