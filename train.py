@@ -46,7 +46,7 @@ if __name__ == "__main__":
     ################ Processing Inputs ################
     parser = argparse.ArgumentParser(description='FL')
     parser.add_argument('--data_dir', type=str, default="./FedUFO/data/")
-    parser.add_argument('--dataset', type=str, default="Support")
+    parser.add_argument('--dataset', type=str, default="Your Own Dataset")
     parser.add_argument('--algorithm', type=str, default="FedAvg")
     parser.add_argument('--type', type=str, default="other")
     parser.add_argument('--seed', type=int, default=0)
