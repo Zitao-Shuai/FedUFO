@@ -12,7 +12,7 @@ NumPy: 1.21.2
 PIL: 9.3.0
 ```
 
-For running the project:
+To run FedUFO on your own dataset：
 
 Example 1: 
 
@@ -20,7 +20,7 @@ Example 1:
 python3 -m FedUFO.train\
 	    --data_dir ./FedUFO/data/\
         --algorithm FedUFO_M_N\
-        --dataset Covid\
+        --dataset Your_Own_Dataset\
         --type M\
         --alpha 0.5
 ```
@@ -31,7 +31,7 @@ Example 2:
 python3 -m FedUFO.train\
 	    --data_dir ./FedUFO/data/\
         --algorithm FedAvg\
-        --dataset Covid\
+        --dataset Your_Own_Dataset\
         --test_EO 1\
         --alpha 1
 ```
@@ -42,7 +42,7 @@ Example 3:
 python3 -m FedUFO.train\
 	    --data_dir ./FedUFO/data/\
         --algorithm FedUFO\
-        --dataset SEER\
+        --dataset Your_Own_Dataset\
         --agnostic_alpha 1\
         --alpha 10
 ```
